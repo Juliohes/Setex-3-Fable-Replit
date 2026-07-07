@@ -5,13 +5,14 @@ import datetime as dt
 import io
 import re
 import unicodedata
+import uuid
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from companies.models import Company
 from invoice_intake.models import Invoice, InvoiceIrpf, InvoiceTaxLine
@@ -98,11 +99,14 @@ def build_workbook(rows_data: list[dict[str, Any]]):
         tramos = r.get("tramos") or []
         base_total = sum((Decimal(str(t["base"])) for t in tramos), Decimal("0"))
         cuota_total = sum((Decimal(str(t["cuota"])) for t in tramos), Decimal("0"))
-        # IVA % representativo: tasa del tramo con MAYOR cuota (reproduce la referencia).
-        iva_repr = 0
-        if tramos:
-            tramo_max = max(tramos, key=lambda t: Decimal(str(t["cuota"])))
-            iva_repr = _pct(tramo_max["iva_pct"])
+        # IVA %: si hay exactamente 1 tramo, su porcentaje; si hay varios, "N tramos".
+        # El detalle por tramo vive en la hoja "Desglose IVA" (no se toca).
+        if len(tramos) == 1:
+            iva_repr: float | int | str = _pct(tramos[0]["iva_pct"])
+        elif tramos:
+            iva_repr = f"{len(tramos)} tramos"
+        else:
+            iva_repr = 0
 
         fecha = _fecha(r.get("fecha"))
         ws.append([
@@ -159,6 +163,7 @@ class PanelRow(BaseModel):
     counterparty: str | None
     counterparty_cif: str | None
     total: Decimal | None
+    tax_line_count: int
     created_at: dt.datetime
 
 
@@ -192,6 +197,17 @@ async def panel_invoices(
             await session.execute(stmt.order_by(Invoice.created_at.desc()).limit(min(limit, 500)))
         ).scalars().all()
         companies = dict((await session.execute(select(Company.id, Company.name))).all())
+        # Una sola query agrupada para el nº de tramos de las facturas devueltas (no N+1).
+        invoice_ids = [i.id for i in rows]
+        counts: dict[uuid.UUID, int] = {}
+        if invoice_ids:
+            counts = dict(
+                (await session.execute(
+                    select(InvoiceTaxLine.invoice_id, func.count())
+                    .where(InvoiceTaxLine.invoice_id.in_(invoice_ids))
+                    .group_by(InvoiceTaxLine.invoice_id)
+                )).all()
+            )
     return [
         PanelRow(
             id=str(i.id),
@@ -200,7 +216,7 @@ async def panel_invoices(
             invoice_number=i.invoice_number, issue_date=i.issue_date,
             counterparty=i.supplier_name if i.type == "received" else i.receiver_name,
             counterparty_cif=i.supplier_cif if i.type == "received" else i.receiver_cif,
-            total=i.total, created_at=i.created_at,
+            total=i.total, tax_line_count=counts.get(i.id, 0), created_at=i.created_at,
         )
         for i in rows
     ]

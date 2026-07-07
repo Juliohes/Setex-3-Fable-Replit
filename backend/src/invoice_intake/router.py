@@ -16,9 +16,9 @@ from invoice_intake.storage import build_storage, make_file_key
 from jobs.queue import enqueue
 from ocr.counterparty.chain import upsert_supplier_master
 from ocr.models import OcrCorrection, OcrExtraction
-from ocr.verification import check_invoice_totals, validate_tax_id
+from ocr.verification import check_invoice_totals, check_tax_line, validate_tax_id
 from security.audit import write_audit
-from security.rbac import Principal, require_user
+from security.rbac import Principal, require_tenant_admin, require_user
 from shared.config import get_settings
 from shared.db import plain_session, tenant_session
 from shared.exceptions import ConflictError, DomainError, ForbiddenError, NotFoundError
@@ -295,7 +295,7 @@ async def confirm_invoice(
     if body.total is None or not body.tax_lines:
         raise DomainError("No se puede confirmar sin total y al menos un tramo de IVA")
     totals_check = check_invoice_totals(
-        [(l.base, l.iva_pct, l.cuota) for l in body.tax_lines], body.irpf_cuota, body.total
+        [(ln.base, ln.iva_pct, ln.cuota) for ln in body.tax_lines], body.irpf_cuota, body.total
     )
     if not totals_check.valid:
         raise DomainError(f"No se puede confirmar: {totals_check.reason}")
@@ -385,6 +385,109 @@ async def confirm_invoice(
             session, tenant_id=tenant.id, actor_type=principal.role, actor_id=principal.subject_id,
             action="invoice_confirmed", entity="invoice", entity_id=str(invoice_id),
             payload={"snapshot": body.model_dump(mode="json"), "responsibility_accepted": True},
+        )
+    return out
+
+
+class TaxLinesEditIn(BaseModel):
+    tax_lines: list[TaxLineIn] = Field(default_factory=list)
+
+
+# Tipos de IVA fijos admitidos en España (§ desglose): 21, 10, 4 y 0.
+_ALLOWED_IVA_PCT = (Decimal("21"), Decimal("10"), Decimal("4"), Decimal("0"))
+
+
+def _tax_lines_summary(lines: list[tuple[Decimal, Decimal, Decimal]]) -> str:
+    """Resumen compacto y estable de un desglose para la traza de correcciones."""
+    parts = [f"{iva_pct}%: base {base} / cuota {cuota}" for iva_pct, base, cuota in lines]
+    text = "; ".join(parts) if parts else "(sin tramos)"
+    return text[:400]
+
+
+@router.patch("/{invoice_id}/tax-lines", response_model=ReviewOut)
+async def edit_tax_lines(
+    request: Request,
+    invoice_id: uuid.UUID,
+    body: TaxLinesEditIn,
+    principal: Principal = Depends(require_tenant_admin),
+) -> ReviewOut:
+    """Edición del desglose de IVA desde el panel del admin (no es la confirmación
+    inicial: sin checkbox de responsabilidad, admite pending_review y confirmed).
+    Reemplaza los tramos por completo, revalidando cada tramo y el cuadre global
+    contra el IRPF ya guardado y el total de la factura."""
+    tenant = _tenant(request)
+    if not body.tax_lines:
+        raise DomainError("El desglose debe tener al menos un tramo de IVA")
+    for line in body.tax_lines:
+        if line.iva_pct not in _ALLOWED_IVA_PCT:
+            raise DomainError(
+                f"Tipo de IVA no permitido: {line.iva_pct}. "
+                "Solo se admiten 21%, 10%, 4% y 0%"
+            )
+        line_check = check_tax_line(line.base, line.iva_pct, line.cuota)
+        if not line_check.valid:
+            raise DomainError(f"Tramo de IVA {line.iva_pct}% inválido: {line_check.reason}")
+
+    async with tenant_session(tenant.id) as session:
+        invoice = (
+            await session.execute(select(Invoice).where(Invoice.id == invoice_id))
+        ).scalar_one_or_none()
+        if invoice is None:
+            raise NotFoundError("Factura no encontrada")
+        if invoice.total is None:
+            raise DomainError("La factura no tiene total para cuadrar el desglose")
+
+        irpf = (
+            await session.execute(select(InvoiceIrpf).where(InvoiceIrpf.invoice_id == invoice.id))
+        ).scalar_one_or_none()
+        irpf_cuota = irpf.cuota if irpf else None
+
+        totals_check = check_invoice_totals(
+            [(ln.base, ln.iva_pct, ln.cuota) for ln in body.tax_lines], irpf_cuota, invoice.total
+        )
+        if not totals_check.valid:
+            raise DomainError(f"El desglose no cuadra: {totals_check.reason}")
+
+        old_lines = (
+            await session.execute(select(InvoiceTaxLine).where(InvoiceTaxLine.invoice_id == invoice.id))
+        ).scalars().all()
+        ai_summary = _tax_lines_summary(
+            [(ln.iva_pct, ln.base, ln.cuota) for ln in old_lines]
+        )
+        new_summary = _tax_lines_summary(
+            [(ln.iva_pct, ln.base, ln.cuota) for ln in body.tax_lines]
+        )
+        for old in old_lines:
+            await session.delete(old)
+        for line in body.tax_lines:
+            session.add(
+                InvoiceTaxLine(
+                    tenant_id=tenant.id, company_id=invoice.company_id, invoice_id=invoice.id,
+                    iva_pct=line.iva_pct, base=line.base, cuota=line.cuota,
+                )
+            )
+        # Capa 4 (mejora continua): la edición humana del desglose deja rastro.
+        session.add(
+            OcrCorrection(
+                tenant_id=tenant.id,
+                company_id=invoice.company_id,
+                invoice_id=invoice.id,
+                field="tax_lines",
+                ai_value=ai_summary,
+                human_value=new_summary,
+                corrected_by=principal.subject_id,
+            )
+        )
+        out = await _load_review(session, tenant.id, invoice)
+
+    async with plain_session() as session:
+        await write_audit(
+            session, tenant_id=tenant.id, actor_type=principal.role, actor_id=principal.subject_id,
+            action="invoice_desglose_edited", entity="invoice", entity_id=str(invoice_id),
+            payload={"tax_lines": [
+                {"iva_pct": str(ln.iva_pct), "base": str(ln.base), "cuota": str(ln.cuota)}
+                for ln in body.tax_lines
+            ]},
         )
     return out
 

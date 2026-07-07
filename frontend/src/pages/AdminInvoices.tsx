@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { apiBlob, apiGet } from "../api/client";
+import DesgloseModal from "../components/DesgloseModal";
 
 interface Row {
   id: string; company: string; type: string; status: string;
   invoice_number: string | null; issue_date: string | null;
   counterparty: string | null; counterparty_cif: string | null;
-  total: string | null; created_at: string;
+  total: string | null; created_at: string; tax_line_count: number;
 }
 
 export default function AdminInvoices() {
@@ -15,6 +16,7 @@ export default function AdminInvoices() {
   const [status, setStatus] = useState("");
   const [cif, setCif] = useState("");
   const [error, setError] = useState("");
+  const [desgloseId, setDesgloseId] = useState<string | null>(null);
 
   function query(): string {
     const q = new URLSearchParams();
@@ -70,6 +72,7 @@ export default function AdminInvoices() {
               <th className="p-2">Empresa</th><th className="p-2">Tipo</th><th className="p-2">Nº</th>
               <th className="p-2">Fecha</th><th className="p-2">Contraparte</th><th className="p-2">CIF</th>
               <th className="p-2 text-right">Total</th><th className="p-2">Estado</th>
+              <th className="p-2">Desglose IVA</th>
             </tr>
           </thead>
           <tbody>
@@ -83,12 +86,30 @@ export default function AdminInvoices() {
                 <td className="p-2 font-mono text-xs">{r.counterparty_cif ?? "—"}</td>
                 <td className="p-2 text-right font-medium">{r.total ? `${r.total} €` : "—"}</td>
                 <td className="p-2">{r.status}</td>
+                <td className="p-2">
+                  {r.tax_line_count === 0 ? (
+                    <button className="text-white/60 hover:text-white" onClick={() => setDesgloseId(r.id)}>
+                      —
+                    </button>
+                  ) : (
+                    <button className="text-brand hover:opacity-80" onClick={() => setDesgloseId(r.id)}>
+                      {r.tax_line_count === 1 ? "1 tramo" : `${r.tax_line_count} tramos`}
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
         {rows.length === 0 && <p className="p-4 text-center text-white/40">Sin resultados</p>}
       </div>
+      {desgloseId && (
+        <DesgloseModal
+          invoiceId={desgloseId}
+          onClose={() => setDesgloseId(null)}
+          onSaved={load}
+        />
+      )}
     </div>
   );
 }

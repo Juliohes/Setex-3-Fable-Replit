@@ -10,6 +10,9 @@ frontend/dist/
 secrets/
 # Datos reales de negocio y exports (PII de clientes — nunca al repositorio)
 /*.xlsx
+/*.png
+# Artefactos de build de TypeScript
+*.tsbuildinfo
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
