@@ -1,0 +1,16 @@
+run = "bash run.sh"
+entrypoint = "backend/src/main.py"
+modules = ["python-3.12", "nodejs-20", "postgresql-16"]
+
+[nix]
+channel = "stable-24_05"
+
+[deployment]
+run = ["bash", "run.sh"]
+build = ["bash", "build.sh"]
+deploymentTarget = "vm"            # Reserved VM: necesario por el worker OCR en segundo plano
+ignorePorts = false
+
+[[ports]]
+localPort = 8000
+externalPort = 80

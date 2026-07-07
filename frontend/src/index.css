@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Colores por defecto (Setex): se sobreescriben en runtime desde /api/v1/branding */
+:root {
+  --color-primary: 255 122 0;   /* #FF7A00 */
+  --color-secondary: 28 28 30;  /* #1C1C1E */
+}
+
+html, body, #root { height: 100%; }
+body {
+  background: rgb(var(--color-secondary));
+  color: #f4f4f5;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.card { @apply rounded-2xl border border-white/10 bg-white/5 p-4; }
+.btn-primary { @apply rounded-xl bg-brand px-4 py-3 font-semibold text-black transition active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-40; }
+.btn-ghost { @apply rounded-xl border border-white/15 px-4 py-3 font-medium text-white/90 transition active:scale-[.98]; }
+.input { @apply w-full rounded-xl border border-white/15 bg-black/30 px-3 py-3 text-white placeholder-white/35 outline-none focus:border-brand; }
+.label { @apply mb-1 block text-xs font-medium uppercase tracking-wide text-white/50; }
