@@ -14,6 +14,17 @@ export function tenantSlug(): string | null {
   return localStorage.getItem("tenant_slug");
 }
 
+// Captura el ?tenant de la URL en el arranque del módulo (antes de que el router
+// pueda redirigir a /login y perder el query param). Sin esto, en la primera
+// visita con localStorage vacío, la carrera de efectos de React haría que
+// /branding se llamase sin X-Tenant-Slug y saliera "Asesoría no encontrada".
+try {
+  const t = new URL(window.location.href).searchParams.get("tenant");
+  if (t) localStorage.setItem("tenant_slug", t);
+} catch {
+  /* entorno sin window: ignorar */
+}
+
 let accessToken: string | null = sessionStorage.getItem("access_token");
 let refreshToken: string | null = localStorage.getItem("refresh_token");
 
