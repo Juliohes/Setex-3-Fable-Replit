@@ -31,15 +31,26 @@ class TenantResolverMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         request.state.tenant = None
-        host = request.headers.get("host", "")
-        slug = _slug_from_host(host) or request.headers.get("X-Tenant-Slug")
-        custom = None if slug else host.split(":")[0].lower()
-        if slug or custom:
-            async with plain_session() as session:
-                stmt = select(Tenant).where(Tenant.status == "active")
-                stmt = stmt.where(Tenant.slug == slug) if slug else stmt.where(
-                    Tenant.custom_domain == custom
-                )
-                tenant = (await session.execute(stmt)).scalar_one_or_none()
-                request.state.tenant = tenant
+        raw_host = request.headers.get("host", "")
+        host_only = raw_host.split(":")[0].lower()
+        slug = _slug_from_host(raw_host) or request.headers.get("X-Tenant-Slug")
+        async with plain_session() as session:
+            tenant = None
+            if slug:
+                tenant = (
+                    await session.execute(
+                        select(Tenant).where(Tenant.status == "active", Tenant.slug == slug)
+                    )
+                ).scalar_one_or_none()
+            # Fallback: dominio propio de la asesoría (p. ej. setex-fable.autoken.es o el
+            # dominio de un cliente), cuando el subdominio no coincide con el slug interno.
+            if tenant is None and host_only:
+                tenant = (
+                    await session.execute(
+                        select(Tenant).where(
+                            Tenant.status == "active", Tenant.custom_domain == host_only
+                        )
+                    )
+                ).scalar_one_or_none()
+            request.state.tenant = tenant
         return await call_next(request)
