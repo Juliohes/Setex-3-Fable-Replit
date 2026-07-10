@@ -1,6 +1,7 @@
 import { useRef, useState, type ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiUpload } from "../api/client";
+import CameraCapture from "../components/CameraCapture";
 
 /** Varianza del Laplaciano sobre canvas: detector de foto borrosa en cliente.
  * Umbral empírico; si es borrosa se avisa ANTES de gastar OCR (plan §3.6-2). */
@@ -38,19 +39,23 @@ export default function Capture() {
   const [blurWarn, setBlurWarn] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showCamera, setShowCamera] = useState(false);
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
 
-  async function onPick(e: ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0];
-    e.target.value = "";
-    if (!f) return;
+  async function handleFile(f: File) {
     setError("");
     setBlurWarn(false);
     setFile(f);
     setPreview(f.type.startsWith("image/") ? URL.createObjectURL(f) : null);
     const score = await blurScore(f);
     if (score !== null && score < 60) setBlurWarn(true);
+  }
+
+  function onPick(e: ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (f) handleFile(f);
   }
 
   async function onUpload() {
@@ -97,9 +102,17 @@ export default function Capture() {
       <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={onPick} />
       <input ref={galleryRef} type="file" accept="image/*,application/pdf" className="hidden" onChange={onPick} />
 
+      {showCamera && (
+        <CameraCapture
+          onCapture={(f) => { setShowCamera(false); handleFile(f); }}
+          onClose={() => setShowCamera(false)}
+          onFallback={() => { setShowCamera(false); cameraRef.current?.click(); }}
+        />
+      )}
+
       {!file ? (
         <div className="space-y-3">
-          <button className="btn-primary w-full py-6 text-lg" onClick={() => cameraRef.current?.click()}>
+          <button className="btn-primary w-full py-6 text-lg" onClick={() => setShowCamera(true)}>
             📷 Hacer foto
           </button>
           <button className="btn-ghost w-full" onClick={() => galleryRef.current?.click()}>
